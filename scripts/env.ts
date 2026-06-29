@@ -1,0 +1,106 @@
+/**
+ * Project-aware config loader, shared by every SEO-agent script.
+ *
+ * This tool is meant to be installed once (as a Claude Code plugin, an npm
+ * package, or a plain clone) and reused across many projects. The *code* is
+ * shared; the *config* — which site, which GA4 property, which credentials —
+ * belongs to each project. So we never read config from next to the script.
+ * We resolve it from the project being worked on, in this order:
+ *
+ *   1. $SEO_AGENT_ENV                  — explicit path to an env file (wins)
+ *   2. <cwd>/.claude/seo/.env          — the conventional per-project location
+ *   3. <cwd>/seo-agent.env             — flat alternative at the project root
+ *   4. <script>/../.env                — co-located fallback (in-repo / dev use)
+ *
+ * A service-account JSON key referenced by GSC_SERVICE_ACCOUNT_KEY_FILE is
+ * resolved relative to the chosen env file's directory, so the key sits next
+ * to the .env that names it (e.g. both in <project>/.claude/seo/).
+ */
+
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, isAbsolute, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const here = dirname(fileURLToPath(import.meta.url));
+
+function candidatePaths(): string[] {
+  const paths: string[] = [];
+  if (process.env.SEO_AGENT_ENV) paths.push(resolve(process.env.SEO_AGENT_ENV));
+  paths.push(resolve(process.cwd(), ".claude/seo/.env"));
+  paths.push(resolve(process.cwd(), "seo-agent.env"));
+  paths.push(resolve(here, "../.env"));
+  return paths;
+}
+
+const candidates = candidatePaths();
+
+/** The env file actually used (the first that exists), or null if none found. */
+export const ENV_PATH: string | null = candidates.find(existsSync) ?? null;
+
+/** Directory holding the chosen env file — the project's SEO config dir. */
+export const CONFIG_DIR: string | null = ENV_PATH ? dirname(ENV_PATH) : null;
+
+function parseEnvFile(path: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  const content = readFileSync(path, "utf-8");
+  for (const line of content.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const eq = trimmed.indexOf("=");
+    if (eq === -1) continue;
+    const key = trimmed.slice(0, eq).trim();
+    let value = trimmed.slice(eq + 1).trim();
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      value = value.slice(1, -1);
+    }
+    out[key] = value;
+  }
+  return out;
+}
+
+function loadEnv(): Record<string, string> {
+  if (!ENV_PATH) {
+    console.error("Error: no SEO-agent config found. Looked for:");
+    for (const p of candidates) console.error(`  - ${p}`);
+    console.error(
+      "\nCreate .claude/seo/.env in your project (copy the tool's .env.example),",
+    );
+    console.error("or point SEO_AGENT_ENV at an env file. See SETUP.md.");
+    process.exit(1);
+  }
+  // Real process env overrides file values, so secrets can come from CI / shell.
+  return { ...parseEnvFile(ENV_PATH), ...stringEnv(process.env) };
+}
+
+/** Narrow process.env (string | undefined) to a plain string record. */
+function stringEnv(src: NodeJS.ProcessEnv): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(src)) if (typeof v === "string") out[k] = v;
+  return out;
+}
+
+export const env = loadEnv();
+
+/**
+ * The Google service-account key as a JSON string, from either an inline value
+ * (GSC_SERVICE_ACCOUNT_KEY) or a file (GSC_SERVICE_ACCOUNT_KEY_FILE, resolved
+ * relative to the config dir). Returns null when neither is set.
+ */
+export function serviceAccountKey(): string | null {
+  if (env.GSC_SERVICE_ACCOUNT_KEY) return env.GSC_SERVICE_ACCOUNT_KEY;
+  const file = env.GSC_SERVICE_ACCOUNT_KEY_FILE;
+  if (!file) return null;
+  const path = isAbsolute(file) ? file : resolve(CONFIG_DIR ?? process.cwd(), file);
+  if (!existsSync(path)) {
+    console.error(`Error: service-account key not found at ${path}`);
+    console.error(
+      "GSC_SERVICE_ACCOUNT_KEY_FILE names it but the file is missing. Download the",
+    );
+    console.error("key JSON and drop it there, or use inline GSC_SERVICE_ACCOUNT_KEY. See SETUP.md.");
+    process.exit(1);
+  }
+  return readFileSync(path, "utf-8");
+}

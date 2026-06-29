@@ -1,0 +1,15 @@
+# Secrets & local config — never commit
+.env
+*.env
+!.env.example
+service-account*.json
+*-key.json
+*.iam.gserviceaccount.com.json
+
+# Caches & deps
+.cache/
+node_modules/
+scripts/node_modules/
+
+# OS / editor
+.DS_Store
