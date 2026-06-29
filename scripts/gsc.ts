@@ -19,10 +19,6 @@ if (!SERVICE_ACCOUNT_KEY) {
   console.error("Error: GSC_SERVICE_ACCOUNT_KEY or GSC_SERVICE_ACCOUNT_KEY_FILE required in .env");
   process.exit(1);
 }
-if (!SITE_URL) {
-  console.error("Error: GSC_SITE_URL required in .env (e.g. https://example.com or sc-domain:example.com)");
-  process.exit(1);
-}
 
 // Parse CLI args
 const args = process.argv.slice(2);
@@ -35,6 +31,13 @@ for (let i = 1; i < args.length; i++) {
   if (args[i] === "--days" && args[i + 1]) days = Number.parseInt(args[++i], 10);
   else if (args[i] === "--limit" && args[i + 1]) limit = Number.parseInt(args[++i], 10);
   else if (!args[i].startsWith("--")) filterQuery = args[i];
+}
+
+// `sites` lists every property the service account can see — it needs no
+// GSC_SITE_URL, and is the quickest way to check whether access was granted.
+if (command !== "sites" && !SITE_URL) {
+  console.error("Error: GSC_SITE_URL required in .env (e.g. https://example.com or sc-domain:example.com)");
+  process.exit(1);
 }
 
 const { google } = await import("googleapis");
@@ -94,7 +97,18 @@ async function query(
   }));
 }
 
-if (command === "queries") {
+if (command === "sites") {
+  // List every property this service account can access, with its permission
+  // level — the fastest way to confirm a grant landed and to copy the exact
+  // GSC_SITE_URL string (sc-domain: vs https:// form).
+  const res = await searchconsole.sites.list();
+  const sites = (res.data.siteEntry ?? []).map((s) => ({
+    site: s.siteUrl,
+    permission: s.permissionLevel,
+  }));
+  console.log(JSON.stringify({ accessible_sites: sites }, null, 2));
+
+} else if (command === "queries") {
   // Top search queries
   const rows = await query(["query"]);
   const output = rows.map((r) => ({
@@ -139,6 +153,6 @@ if (command === "queries") {
   console.log(JSON.stringify({ period: `${days} days`, filter: filterQuery, results: output }, null, 2));
 
 } else {
-  console.error("Usage: gsc.ts <queries|pages|query-pages> [--days 30] [--limit 20]");
+  console.error("Usage: gsc.ts <sites|queries|pages|query-pages> [--days 30] [--limit 20]");
   process.exit(1);
 }
